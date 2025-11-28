@@ -11,17 +11,19 @@ chrome.runtime.onMessage.addListener((msg) => {
     }
 });
 
-chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.action === "refresh_dashboard") {
-        start(); // reload everything
-    }
-});
 function openDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open("TaskMiningDB", 2);
+        const request = indexedDB.open("TaskMiningDB", 4);
 
         request.onupgradeneeded = (e) => {
             console.log("Dashboard upgrade needed — stores:", e.target.result.objectStoreNames);
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains('events')) {
+                const store = db.createObjectStore('events', { keyPath: 'id', autoIncrement: true });
+                store.createIndex('event_ts', 'timestamp', { unique: false });
+                store.createIndex('event_type', 'event', { unique: false });
+                store.createIndex('url', 'url', { unique: false });
+            }
         };
 
         request.onsuccess = (e) => {
@@ -142,16 +144,24 @@ function renderWorkflowDetails(workflow, number) {
 
 // ---------- INIT ----------
 async function start() {
-    console.log("Loading events...");
-    const events = await loadEvents();
+    try {
+        console.log("Loading events...");
+        const events = await loadEvents();
 
-    console.log("Loaded events:", events);
+        console.log("Loaded events:", events);
 
-    const workflows = groupWorkflows(events);
+        const workflows = groupWorkflows(events);
 
-    console.log("Grouped workflows:", workflows);
+        console.log("Grouped workflows:", workflows);
 
-    renderWorkflowList(workflows);
+        renderWorkflowList(workflows);
+    } catch (err) {
+        console.error("Error loading dashboard:", err);
+        const list = document.getElementById("workflow-list");
+        if (list) {
+            list.innerHTML = `<p style='padding:10px;color:red;'>Error loading data: ${err.message || err}</p>`;
+        }
+    }
 }
 
 start();

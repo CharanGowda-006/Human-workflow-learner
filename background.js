@@ -8,7 +8,7 @@ function getDB() {
     return new Promise((resolve, reject) => {
         if (dbInstance) return resolve(dbInstance);
 
-        const request = indexedDB.open('TaskMiningDB', 3); // version 3 for schema changes
+        const request = indexedDB.open('TaskMiningDB', 4); // version 4 to force schema update
 
         request.onupgradeneeded = (e) => {
             const db = e.target.result;
