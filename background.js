@@ -1,53 +1,57 @@
 //this file is to store recorded activity into log
 
-// Listen for refresh notifications from background
-chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.action === "refresh_dashboard") {
-        console.log("Dashboard refreshing due to new event...");
-        start(); // reload workflows
-    }
-});
-let db;
+// background.js (service worker)
 
+// --------- IndexedDB helper ----------
+let dbInstance;
 function getDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open("TaskMiningDB", 2);   // ← BUMP VERSION TO 2
+        if (dbInstance) return resolve(dbInstance);
 
-        request.onupgradeneeded = (event) => {
-            const database = event.target.result;
+        const request = indexedDB.open('TaskMiningDB', 3); // version 3 for schema changes
 
-            // If "events" does NOT exist, create it
-            if (!database.objectStoreNames.contains("events")) {
-                database.createObjectStore("events", {
-                    keyPath: "id",
-                    autoIncrement: true
-                });
+        request.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains('events')) {
+                const store = db.createObjectStore('events', { keyPath: 'id', autoIncrement: true });
+                // useful indexes for queries
+                store.createIndex('event_ts', 'timestamp', { unique: false });
+                store.createIndex('event_type', 'event', { unique: false });
+                store.createIndex('url', 'url', { unique: false });
             }
         };
 
-        request.onsuccess = (event) => {
-            db = event.target.result;
-            resolve(db);
+        request.onsuccess = (e) => {
+            dbInstance = e.target.result;
+            resolve(dbInstance);
         };
 
-        request.onerror = () => reject("DB open failed");
+        request.onerror = (e) => reject(e);
     });
 }
 
-chrome.runtime.onMessage.addListener(async (msg) => {
-    console.log("Background received:", msg);
-    const database = await getDB();
-    const tx = database.transaction("events", "readwrite");
-    tx.objectStore("events").add(msg);
-});
+// write + notify
 chrome.runtime.onMessage.addListener(async (msg, sender) => {
-    console.log("Background received:", msg);
-    const database = await getDB();
-    const tx = database.transaction("events", "readwrite");
-    tx.objectStore("events").add(msg);
+    try {
+        const db = await getDB();
+        const tx = db.transaction('events', 'readwrite');
+        const store = tx.objectStore('events');
+        const req = store.add(msg);
 
-    // 🔥 Notify any open dashboard to refresh
-    chrome.runtime.sendMessage({ action: "refresh_dashboard" });
+        tx.oncomplete = () => {
+            console.log('WRITE COMPLETE:', msg);
+            // notify dashboards to refresh (non-blocking)
+            chrome.runtime.sendMessage({ action: 'refresh_dashboard' });
+        };
+
+        tx.onerror = (err) => {
+            console.error('WRITE FAILED', err);
+        };
+    } catch (err) {
+        console.error('DB write failed', err);
+    }
+    // Return false to indicate asynchronous response not used
+    return false;
 });
 
 

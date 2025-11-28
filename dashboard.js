@@ -1,4 +1,16 @@
 // ---------- IndexedDB Connection ----------
+// listen for refresh and debounce reload
+let refreshTimeout;
+chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.action === 'refresh_dashboard') {
+        clearTimeout(refreshTimeout);
+        refreshTimeout = setTimeout(() => {
+            console.log('Dashboard: refreshing due to new events');
+            start();
+        }, 150);
+    }
+});
+
 chrome.runtime.onMessage.addListener((msg) => {
     if (msg.action === "refresh_dashboard") {
         start(); // reload everything
@@ -6,19 +18,22 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 function openDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open("TaskMiningDB", 2); // MUST MATCH background.js VERSION
+        const request = indexedDB.open("TaskMiningDB", 2);
 
         request.onupgradeneeded = (e) => {
             console.log("Dashboard upgrade needed — stores:", e.target.result.objectStoreNames);
         };
 
         request.onsuccess = (e) => {
-            console.log("Dashboard DB opened — stores:", e.target.result.objectStoreNames);
+            const db = e.target.result;
+            console.log("Dashboard DB opened — stores:", db.objectStoreNames);
+            resolve(db); 
         };
 
         request.onerror = () => reject("DB open failed");
     });
 }
+
 
 
 // ---------- Load All Events from DB ----------
