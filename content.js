@@ -1,26 +1,19 @@
-// content.js
-// Advanced event capture for Task Mining
-// NOTE: By default we DO NOT capture input text values (privacy).
-// Set CAPTURE_INPUT_VALUE = true to capture hashed values (SHA-256) instead of raw text.
+// content.js - Advanced Task Mining + Expanded UI Capture
+// ---------------------------------------------------------
 
-const CAPTURE_INPUT_VALUE = false; // set true only with user consent
-const CAPTURE_INPUT_HASH = true; // if true and CAPTURE_INPUT_VALUE true, store SHA-256 hex
+const CAPTURE_INPUT_VALUE = false; 
+const CAPTURE_INPUT_HASH = true; 
 
-// safe send wrapper
+// ------------------ Safe Send ------------------
 function safeSend(msg) {
     try {
         chrome.runtime.sendMessage(msg, () => {
-            if (chrome.runtime.lastError) {
-                // service worker sleeping — ignore
-                // console.warn("Message dropped:", chrome.runtime.lastError.message);
-            }
+            if (chrome.runtime.lastError) {}
         });
-    } catch (e) {
-        // extension context invalidated
-    }
+    } catch (e) {}
 }
 
-// helper: build a reasonably-unique CSS selector
+// ------------------ Helpers ------------------
 function getCssSelector(el) {
     if (!el) return null;
     if (el.id) return `#${el.id}`;
@@ -45,7 +38,6 @@ function getCssSelector(el) {
     return parts.length ? parts.join(" > ") : null;
 }
 
-// helper: get XPath
 function getXPath(el) {
     if (!el) return null;
     let xpath = '';
@@ -59,15 +51,13 @@ function getXPath(el) {
     return xpath || null;
 }
 
-// helper: shorten text safely
 function shortText(s, n = 120) {
     if (!s) return '';
     let t = String(s).trim();
-    if (t.length > n) return t.slice(0, n) + '…';
-    return t;
+    return t.length > n ? t.slice(0, n) + '…' : t;
 }
 
-// optional hashing using SubtleCrypto
+// ------------------ SHA-256 hashing ------------------
 async function sha256Hex(str) {
     const enc = new TextEncoder();
     const data = enc.encode(str);
@@ -76,146 +66,219 @@ async function sha256Hex(str) {
     return arr.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// build event object
+// ------------------ DOM-TREE CAPTURE ------------------
+function getDomContext(el) {
+    if (!el) return {};
+
+    // Parent element
+    const parent = el.parentElement
+        ? {
+              tag: el.parentElement.tagName,
+              id: el.parentElement.id,
+              classes: el.parentElement.className
+          }
+        : null;
+
+    // Siblings
+    const siblings = el.parentElement
+        ? Array.from(el.parentElement.children).map(e => ({
+              tag: e.tagName,
+              id: e.id,
+              classes: e.className,
+              text: shortText(e.innerText)
+          }))
+        : [];
+
+    // Ancestors
+    const ancestors = [];
+    let p = el.parentElement;
+    while (p && p.tagName !== "HTML") {
+        ancestors.push({
+            tag: p.tagName,
+            id: p.id,
+            classes: p.className
+        });
+        p = p.parentElement;
+    }
+
+    return { parent, siblings, ancestors };
+}
+
+// ------------------ Semantic Classification ------------------
+function classifyElement(el, meta) {
+    const text = (meta.text || "").toLowerCase();
+    const id = (meta.id || "").toLowerCase();
+    const cls = (meta.classes || "").toLowerCase();
+    const ph = (el.placeholder || "").toLowerCase();
+
+    if (text.includes("login") || id.includes("login")) return "login_button";
+    if (text.includes("submit") || id.includes("submit")) return "submit_button";
+
+    if (meta.tag === "INPUT") {
+        if ((el.type || "").toLowerCase() === "password") return "password_field";
+        if ((el.type || "").toLowerCase() === "email") return "email_field";
+        if (ph.includes("search") || id.includes("search")) return "search_box";
+    }
+
+    if (meta.tag === "A") return "link";
+
+    if (cls.includes("btn") || cls.includes("button")) return "button";
+
+    return "generic_element";
+}
+
+// ------------------ Build Event ------------------
 async function buildEventObject(type, extra = {}) {
-    const event = {
+    return {
         event: type,
         timestamp: Date.now(),
         url: location.href,
         title: document.title,
         viewport: { width: window.innerWidth, height: window.innerHeight },
         scrollY: window.scrollY || window.pageYOffset || 0,
-        page_fingerprint: window.location.hostname + '|' + document.title, // simple fingerprint
+        page_fingerprint: window.location.hostname + "|" + document.title,
         ...extra
     };
-    return event;
 }
 
-// common metadata from element
+// ------------------ Metadata ------------------
 async function metaFromElement(el) {
     if (!el) return {};
+
     const selector = getCssSelector(el);
     const xpath = getXPath(el);
-    const text = shortText(el.innerText || el.textContent || '');
-    return {
+    const text = shortText(el.innerText || el.textContent || "");
+
+    const dom = getDomContext(el);
+
+    const meta = {
         tag: el.tagName,
-        id: el.id || '',
-        classes: el.className || '',
+        id: el.id || "",
+        classes: el.className || "",
         selector,
         xpath,
-        text
+        text,
+        dom
     };
+
+    meta.semantic_tag = classifyElement(el, meta);
+
+    return meta;
 }
 
-// CLICK
-document.addEventListener('click', async (e) => {
-    try {
-        const el = e.target;
-        const meta = await metaFromElement(el);
-        const obj = await buildEventObject('click', {
-            data: {
-                ...meta,
-                x: e.clientX,
-                y: e.clientY,
-                button: e.button
-            }
-        });
-        safeSend(obj);
-    } catch (err) {}
+// ------------------ CLICK ------------------
+document.addEventListener("click", async (e) => {
+    const el = e.target;
+    const meta = await metaFromElement(el);
+
+    const rect = el.getBoundingClientRect();
+
+    const obj = await buildEventObject("click", {
+        data: {
+            ...meta,
+            x: e.clientX,
+            y: e.clientY,
+            bbox: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
+            button: e.button
+        }
+    });
+
+    safeSend(obj);
 }, true);
 
-// FORM INPUT (metadata only) — capture focus, blur, and input length (no raw value by default)
+// ------------------ RIGHT CLICK ------------------
+document.addEventListener("contextmenu", async (e) => {
+    const meta = await metaFromElement(e.target);
+    safeSend(await buildEventObject("right_click", { data: meta }));
+}, true);
+
+// ------------------ DRAG EVENTS ------------------
+document.addEventListener("dragstart", async (e) => {
+    safeSend(await buildEventObject("drag_start", {
+        data: await metaFromElement(e.target)
+    }));
+}, true);
+
+document.addEventListener("drop", async (e) => {
+    safeSend(await buildEventObject("drop", {
+        data: await metaFromElement(e.target)
+    }));
+}, true);
+
+// ------------------ INPUT ------------------
 function fieldNameForInput(el) {
-    if (!el) return '';
-    return el.name || el.getAttribute('id') || el.getAttribute('aria-label') || el.placeholder || '';
+    return (
+        el.name ||
+        el.getAttribute("id") ||
+        el.getAttribute("aria-label") ||
+        el.placeholder ||
+        ""
+    );
 }
 
 async function handleInputEvent(e) {
-    try {
-        const el = e.target;
-        if (!el) return;
-        const meta = await metaFromElement(el);
-        const fieldName = fieldNameForInput(el);
-        let inputInfo = { length: (el.value || '').length };
-        if (CAPTURE_INPUT_VALUE && CAPTURE_INPUT_HASH) {
-            const hash = await sha256Hex(el.value || '');
-            inputInfo = { length: (el.value || '').length, hash };
-        }
-        const obj = await buildEventObject('input', {
+    const el = e.target;
+    const meta = await metaFromElement(el);
+
+    let inputInfo = { length: (el.value || "").length };
+    if (CAPTURE_INPUT_VALUE && CAPTURE_INPUT_HASH) {
+        inputInfo.hash = await sha256Hex(el.value);
+    }
+
+    safeSend(
+        await buildEventObject("input", {
             data: {
                 ...meta,
                 field_type: el.type || el.tagName,
-                field_name: fieldName,
+                field_name: fieldNameForInput(el),
                 input: inputInfo
             }
-        });
-        safeSend(obj);
-    } catch (err) {}
+        })
+    );
 }
 
-document.addEventListener('input', debounce(handleInputEvent, 300), true);
-document.addEventListener('change', handleInputEvent, true);
-document.addEventListener('focusin', async (e) => {
-    const el = e.target;
-    const meta = await metaFromElement(el);
-    const obj = await buildEventObject('focus', { data: meta });
-    safeSend(obj);
-}, true);
-document.addEventListener('focusout', async (e) => {
-    const el = e.target;
-    const meta = await metaFromElement(el);
-    const obj = await buildEventObject('blur', { data: meta });
-    safeSend(obj);
+document.addEventListener("input", debounce(handleInputEvent, 300), true);
+document.addEventListener("change", handleInputEvent, true);
+
+// ------------------ FOCUS ------------------
+document.addEventListener("focusin", async (e) => {
+    safeSend(await buildEventObject("focus", { data: await metaFromElement(e.target) }));
 }, true);
 
-// SCROLL (debounced)
+document.addEventListener("focusout", async (e) => {
+    safeSend(await buildEventObject("blur", { data: await metaFromElement(e.target) }));
+}, true);
+
+// ------------------ SCROLL ------------------
 function onScroll() {
-    buildEventObject('scroll', {
+    buildEventObject("scroll", {
         data: {
-            scrollY: window.scrollY || window.pageYOffset || 0,
+            scrollY: window.scrollY,
             viewport: { w: window.innerWidth, h: window.innerHeight }
         }
     }).then(safeSend);
 }
-window.addEventListener('scroll', debounce(onScroll, 300), { passive: true });
+window.addEventListener("scroll", debounce(onScroll, 300), { passive: true });
 
-// VISIT (page load)
-buildEventObject('page_visit', {
+// ------------------ NAVIGATION / PAGE VISIT ------------------
+buildEventObject("page_visit", {
     data: {
         url: location.href,
         title: document.title,
-        referrer: document.referrer || ''
+        referrer: document.referrer || ""
     }
 }).then(safeSend);
 
-// helper: debounce
-function debounce(fn, ms = 200) {
-    let t;
-    return (...args) => {
-        clearTimeout(t);
-        t = setTimeout(() => fn(...args), ms);
-    };
-}
-
-// also capture navigation events (single page apps)
-window.addEventListener('popstate', () => {
-    buildEventObject('navigation', {
+window.addEventListener("popstate", () => {
+    buildEventObject("navigation", {
         data: { url: location.href, title: document.title }
     }).then(safeSend);
 });
 
-// capture unload (end of session)
-window.addEventListener('beforeunload', () => {
-    // synchronous send isn't guaranteed, but we still try
-    try {
-        navigator.sendBeacon && navigator.sendBeacon('/__noop', JSON.stringify({ event: 'unload', timestamp: Date.now() }));
-    } catch (e) {}
-});
-
-// small heartbeat to indicate page still alive (optional)
+// ------------------ HEARTBEAT ------------------
 setInterval(() => {
-    buildEventObject('heartbeat', { data: { url: location.href } }).then(safeSend);
+    buildEventObject("heartbeat", { data: { url: location.href } }).then(safeSend);
 }, 60 * 1000);
 
-// log script loaded
-console.log('CONTENT SCRIPT LOADED');
+// ------------------ LOG ------------------
+console.log("CONTENT SCRIPT LOADED WITH DOM, DRAG, SEMANTICS");
